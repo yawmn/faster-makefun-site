@@ -102,7 +102,8 @@ function countWords(text) {
   let n = 0;
   let inWord = false;
   for (let i = 0; i < text.length; i++) {
-    if (isSpaceCode(text.charCodeAt(i))) inWord = false;
+    const c = text.charCodeAt(i);
+    if (c === 32 || (c >= 9 && c <= 13) || (c > 127 && isSpaceCode(c))) inWord = false;
     else if (!inWord) {
       inWord = true;
       n++;
@@ -873,6 +874,8 @@ const dirOf = (path) => {
 };
 
 function resolvePath(dir, rel) {
+  // A relative path with no step, no empty segment and no trailing slash resolves to itself under `dir`.
+  if (rel.indexOf('.') === -1 && rel.indexOf('//') === -1 && !rel.endsWith('/')) return dir === '' ? rel : `${dir}/${rel}`;
   const parts = dir === '' ? [] : dir.split('/');
   for (const seg of rel.split('/')) {
     if (seg === '' || seg === '.') continue;
@@ -1018,13 +1021,22 @@ export function run(input) {
   }
 
   // Tags.
+  const slugOf = new Map();
+  const slugOfName = (nm) => {
+    let slug = slugOf.get(nm);
+    if (slug === undefined) {
+      slug = slugify(nm);
+      slugOf.set(nm, slug);
+    }
+    return slug;
+  };
   const ownTagNames = (s) => {
     const tags = s.data.tags ?? [];
     if (tags.length === 0) return tags;
     const seen = new Set();
     const out = [];
     for (const nm of tags) {
-      const slug = slugify(nm);
+      const slug = slugOfName(nm);
       if (seen.has(slug)) continue;
       seen.add(slug);
       out.push(nm);
@@ -1035,7 +1047,7 @@ export function run(input) {
   for (const p of posts) {
     p.tagRefs = [];
     for (const nm of ownTagNames(p)) {
-      const slug = slugify(nm);
+      const slug = slugOfName(nm);
       let tag = bySlug.get(slug);
       if (tag === undefined) {
         tag = { name: nm, slug, url: `${base}/tags/${slug}/`, posts: [] };
@@ -1048,7 +1060,7 @@ export function run(input) {
   for (const s of kept) {
     if (s.post) continue;
     s.tagRefs = ownTagNames(s).map((nm) => {
-      const slug = slugify(nm);
+      const slug = slugOfName(nm);
       return bySlug.get(slug) ?? { name: nm, slug, url: '', posts: [] };
     });
   }
@@ -1066,7 +1078,7 @@ export function run(input) {
     tags: s.tagRefs.map((t) => ({ name: t.name, slug: t.slug, url: t.url })),
   });
   const cards = new Map();
-  for (const p of posts) cards.set(p, cardOf(p));
+  for (const s of kept) cards.set(s, cardOf(s));
 
   const linkOf = (s) =>
     s === null ? null : { title: s.data.title, url: s.url, date: s.data.date ?? '', date_long: s.data.date === undefined ? '' : longDate(s.data.date) };
@@ -1091,7 +1103,7 @@ export function run(input) {
   };
 
   for (const s of kept) {
-    const card = cards.get(s) ?? cardOf(s);
+    const card = cards.get(s);
     out[`${s.outDir}/index.html`] = render(s.layout, {
       page: {
         title: card.title,
@@ -1110,6 +1122,15 @@ export function run(input) {
         is_post: s.post,
       },
     });
+  }
+
+  // Every card is built and every page rendered: the per-source buffers are no longer needed.
+  for (const s of kept) {
+    s.body = undefined;
+    s.html = undefined;
+    s.toc = undefined;
+    s.excerpt = undefined;
+    s.data = undefined;
   }
 
   const per = site.per_page;
