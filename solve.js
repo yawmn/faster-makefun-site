@@ -399,29 +399,50 @@ function inline(s, env) {
   return last === s.length ? out : out + escapeHtml(s.slice(last));
 }
 
+/** Whether the range `[a, b)` of `src` is blank (spaces and tabs only). */
+function isBlankRange(src, a, b) {
+  for (let i = a; i < b; i++) {
+    const c = src.charCodeAt(i);
+    if (c !== 32 && c !== 9) return false;
+  }
+  return true;
+}
+
 /** `src` rendered in one pass: its HTML, its table of contents and its excerpt. */
 function renderMarkdown(src, env) {
-  const lines = src.split('\n');
-  const n = lines.length;
+  // Lines are ranges of `src`, so a blank line costs no string and no array entry.
+  const total = src.length;
   const ids = new Set();
   const toc = [];
   let excerpt = null;
   let html = '';
+  let line = '';
   let i = 0;
-  while (i < n) {
-    const line = lines[i];
-    if (isBlank(line)) {
-      i++;
+  const readLine = () => {
+    let end = src.indexOf('\n', i);
+    if (end === -1) end = total;
+    line = src.slice(i, end);
+    i = end + 1;
+  };
+  while (i < total) {
+    let end = src.indexOf('\n', i);
+    if (end === -1) end = total;
+    if (isBlankRange(src, i, end)) {
+      i = end + 1;
       continue;
     }
+    line = src.slice(i, end);
+    i = end + 1;
     const c0 = line.charCodeAt(0);
     if (c0 === 96) {
       const fence = FENCE_OPEN.exec(line);
       if (fence !== null) {
         let code = '';
-        i++;
-        while (i < n && !FENCE_CLOSE.test(lines[i])) code += `${escapeHtml(lines[i++])}\n`;
-        i++;
+        while (i < total) {
+          readLine();
+          if (FENCE_CLOSE.test(line)) break;
+          code += `${escapeHtml(line)}\n`;
+        }
         const lang = fence[1];
         html += lang === '' ? `<pre><code>${code}</code></pre>\n` : `<pre><code class="language-${escapeHtml(lang)}">${code}</code></pre>\n`;
         continue;
@@ -435,21 +456,20 @@ function renderMarkdown(src, env) {
         const depth = heading.depth;
         html += `<h${depth} id="${id}">${inner}</h${depth}>\n`;
         if (depth === 2 || depth === 3) toc.push({ level: depth, id, html: inner });
-        i++;
         continue;
       }
     }
     if ((c0 === 45 || c0 === 42) && HR.test(line)) {
       html += '<hr>\n';
-      i++;
       continue;
     }
     if (c0 === 62) {
       const body = [];
-      while (i < n && lines[i].charCodeAt(0) === 62) {
-        const l = lines[i++];
-        const t = trimBoth(l.charCodeAt(1) === 32 ? l.slice(2) : l.slice(1));
+      for (;;) {
+        const t = trimBoth(line.charCodeAt(1) === 32 ? line.slice(2) : line.slice(1));
         if (t !== '') body.push(t);
+        if (i >= total || src.charCodeAt(i) !== 62) break;
+        readLine();
       }
       html += body.length === 0 ? '<blockquote>\n</blockquote>\n' : `<blockquote>\n<p>${inline(body.join('\n'), env)}</p>\n</blockquote>\n`;
       continue;
@@ -462,16 +482,19 @@ function renderMarkdown(src, env) {
       const isOrdered = ordered !== null;
       const marker = isOrdered ? ORDERED : BULLET;
       const items = [];
-      while (i < n) {
-        const cur = lines[i];
-        const m = marker.exec(cur);
-        if (m !== null) {
-          items.push([trimBoth(isOrdered ? m[2] : m[1])]);
-          i++;
-        } else if (CONTINUED.test(cur)) {
-          items[items.length - 1].push(trimBoth(cur));
-          i++;
-        } else break;
+      for (;;) {
+        const m = marker.exec(line);
+        if (m !== null) items.push([trimBoth(isOrdered ? m[2] : m[1])]);
+        else if (CONTINUED.test(line)) items[items.length - 1].push(trimBoth(line));
+        else break;
+        if (i >= total) break;
+        let next = src.indexOf('\n', i);
+        if (next === -1) next = total;
+        const peek = src.slice(i, next);
+        // A line that ends the list is left for the outer loop, never consumed here.
+        if (marker.exec(peek) === null && !CONTINUED.test(peek)) break;
+        line = peek;
+        i = next + 1;
       }
       const start = isOrdered ? Number(ordered[1]) : 1;
       const open = isOrdered && start !== 1 ? `<ol start="${start}">` : isOrdered ? '<ol>' : '<ul>';
@@ -481,15 +504,20 @@ function renderMarkdown(src, env) {
       continue;
     }
     const body = [trimBoth(line)];
-    i++;
-    while (i < n && !endsParagraph(lines[i])) body.push(trimBoth(lines[i++]));
+    while (i < total) {
+      let next = src.indexOf('\n', i);
+      if (next === -1) next = total;
+      const text = src.slice(i, next);
+      if (endsParagraph(text)) break;
+      body.push(trimBoth(text));
+      i = next + 1;
+    }
     const inner = inline(body.join('\n'), env);
     if (excerpt === null) excerpt = inner;
     html += `<p>${inner}</p>\n`;
   }
   return { html, toc, excerpt: excerpt ?? '' };
 }
-
 // ------------------------------------------------------------------ templates
 
 const INCLUDE_DEPTH = 8;
